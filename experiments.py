@@ -43,6 +43,7 @@ from .uncertainty import (
 
 
 def project_paths(project_root: Path) -> dict[str, Path]:
+    """Standard folders used by this proof-of-principle package."""
 
     return {
         "root": project_root,
@@ -53,6 +54,7 @@ def project_paths(project_root: Path) -> dict[str, Path]:
 
 
 def run_data_generation(project_root: Path, cfg: GenerationConfig | None = None) -> pd.DataFrame:
+    """Generate all datasets, checks, and adaptation-set diagnostics."""
 
     cfg = cfg or GenerationConfig()
     paths = project_paths(project_root)
@@ -74,6 +76,7 @@ def run_data_generation(project_root: Path, cfg: GenerationConfig | None = None)
 
 
 def create_learning_and_time_plots(metrics: pd.DataFrame, results_dir: Path) -> None:
+    """Create required learning-curve and training-time plots."""
 
     import matplotlib
 
@@ -179,6 +182,11 @@ def run_static_models(
     tune: bool = True,
     n_trials: int = 8,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Train static NN and static MoE once on the base training set.
+
+    When tune=True, Optuna is used for the general NN and each MoE expert, and
+    loss/cluster diagnostics are written under results/figures/model_diagnostics.
+    """
 
     paths = project_paths(project_root)
     datasets = load_datasets(paths["data"])
@@ -271,6 +279,7 @@ def run_static_models(
 
 
 def run_incremental_comparison(project_root: Path, seed: int = 42) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Run the full 0/20/40/60/80/100 adaptation comparison."""
 
     cfg = GenerationConfig(seed=seed)
     paths = project_paths(project_root)
@@ -504,6 +513,7 @@ def run_incremental_comparison(project_root: Path, seed: int = 42) -> tuple[pd.D
 
 
 def run_all(project_root: Path, seed: int = 42) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Regenerate data and run the full predictive-modeling protocol."""
 
     summary = run_data_generation(project_root, GenerationConfig(seed=seed))
     metrics, update_log = run_incremental_comparison(project_root, seed=seed)
