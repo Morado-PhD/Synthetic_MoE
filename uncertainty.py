@@ -1,3 +1,5 @@
+"""MAPIE conformal prediction intervals and calibration diagnostics."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,6 +29,7 @@ NORMAL_95_Z = 1.959963984540054
 
 
 class TorchRegressorAdapter(BaseEstimator, RegressorMixin):
+    """Sklearn-compatible, prefit wrapper around one PyTorch regressor."""
 
     def __init__(
         self,
@@ -64,7 +67,7 @@ class TorchRegressorAdapter(BaseEstimator, RegressorMixin):
 
 @dataclass
 class ConformalResult:
-
+    """Artifacts from one conformalized model diagnostic."""
 
     predictions: pd.DataFrame
     calibration: pd.DataFrame
@@ -87,7 +90,7 @@ def _assigned_experts(model: MoERegressor, df: pd.DataFrame, scalers: Scalers) -
 
 
 def _minimum_conformalization_samples(confidence_levels: Iterable[float] = CALIBRATION_LEVELS) -> int:
-
+    """Minimum sample count required by MAPIE for the requested confidence levels."""
 
     levels = [float(level) for level in confidence_levels]
     required = max(max(1.0 / level, 1.0 / (1.0 - level)) for level in levels)
@@ -95,6 +98,7 @@ def _minimum_conformalization_samples(confidence_levels: Iterable[float] = CALIB
 
 
 def _normal_crps(y_true: np.ndarray, y_pred: np.ndarray, sigma: np.ndarray) -> np.ndarray:
+    """CRPS for a normal approximation inferred from conformal interval width."""
 
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
@@ -115,6 +119,7 @@ def summarize_uq_metrics(
     uq_scope: str,
     confidence_level: float = 0.95,
 ) -> pd.DataFrame:
+    """Summarize UQ quality with MACE, PICP, MPIW, and CRPS."""
 
     rows = []
     for (model_name, expert), pred_group in predictions.groupby(["model", "expert"], sort=False):
@@ -152,6 +157,7 @@ def summarize_uq_metrics(
 
 
 def write_uq_metric_summary(results_dir: Path) -> pd.DataFrame:
+    """Write scope-specific and combined UQ metric summary tables."""
 
     frames = []
     for prefix in ["static", "adaptive", "begin_end"]:
@@ -282,6 +288,7 @@ def conformalize_prefit_model(
     assigned_expert: np.ndarray | None = None,
     conformity_assigned_expert: np.ndarray | None = None,
 ) -> ConformalResult:
+    """Conformalize one already-fitted model and evaluate coverage on test data."""
 
     confidence_levels = tuple(float(v) for v in confidence_levels)
     adapter = TorchRegressorAdapter(model, scalers, expert_id=expert_id)
@@ -330,6 +337,7 @@ def nn_uncertainty_diagnostics(
     test_df: pd.DataFrame,
     model_name: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Create MAPIE intervals for one general neural-network model."""
 
     result = conformalize_prefit_model(
         model=nn_model,
@@ -351,6 +359,7 @@ def moe_uncertainty_diagnostics(
     expert_model_prefix: str,
     min_expert_calibration_samples: int = 8,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Create MAPIE intervals for one full MoE and its routed experts."""
 
     min_samples = max(
         int(min_expert_calibration_samples),
@@ -413,6 +422,7 @@ def static_uncertainty_diagnostics(
     figures_dir: Path,
     min_expert_calibration_samples: int = 8,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Create 95% MAPIE intervals and coverage curves for static models."""
 
     results_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
@@ -477,6 +487,7 @@ def begin_end_uncertainty_diagnostics(
     n_adapt_heldout_for_conformalization: int,
     min_expert_calibration_samples: int = 21,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Create beginning/end MAPIE diagnostics for static, retrained, and adaptive models."""
 
     results_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
@@ -564,6 +575,7 @@ def split_adaptation_for_uq(
     calibration_fraction: float = 0.75,
     seed: int = 42,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split adaptation data into model-update and conformalization subsets."""
 
     if not 0.0 < calibration_fraction < 1.0:
         raise ValueError("calibration_fraction must be between 0 and 1.")
@@ -598,6 +610,7 @@ def adaptive_uncertainty_diagnostics(
     calibration_fraction: float = 0.75,
     min_expert_calibration_samples: int = 21,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Create valid adaptive-MoE UQ using held-out conformalization data."""
 
     import copy
 
@@ -655,6 +668,7 @@ def adaptive_uncertainty_diagnostics(
 
 
 def plot_interval_calibration(calibration: pd.DataFrame, output_path: Path) -> None:
+    """Plot empirical interval coverage against nominal confidence."""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(7, 6))
@@ -683,6 +697,7 @@ def plot_interval_calibration(calibration: pd.DataFrame, output_path: Path) -> N
 
 
 def plot_prediction_intervals_95(predictions: pd.DataFrame, output_path: Path) -> None:
+    """Plot 95% intervals for ensemble-level static predictions."""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     plot_df = predictions.sort_values(["model", "y_true"]).reset_index(drop=True)
@@ -718,6 +733,7 @@ def plot_prediction_intervals_95(predictions: pd.DataFrame, output_path: Path) -
 
 
 def _category_palette(values: Iterable[object]) -> dict[object, str]:
+    """Stable categorical colors for pair/parity plots."""
 
     unique_values = list(pd.Series(list(values)).dropna().unique())
     unique_values = sorted(unique_values, key=lambda value: str(value))
@@ -732,6 +748,7 @@ def _plot_prediction_interval_pairplot(
     color_col: str | None,
     legend_title: str,
 ) -> None:
+    """Plot y_true versus y_pred with 95% prediction intervals."""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(6.5, 6))
@@ -804,6 +821,7 @@ def plot_begin_end_pairplot_grid(
     legend_title: str,
     title: str,
 ) -> None:
+    """Create side-by-side beginning/end prediction interval pairplots."""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     panels = [
@@ -872,6 +890,7 @@ def plot_begin_end_pairplot_grid(
 
 
 def _slug(text: str) -> str:
+    """Create a compact filesystem slug for plot names."""
 
     return (
         text.lower()
@@ -891,6 +910,7 @@ def plot_begin_end_pairplot_figures(
     color_col: str,
     legend_title: str,
 ) -> None:
+    """Write one beginning/end prediction interval figure per model."""
 
     figures_dir.mkdir(parents=True, exist_ok=True)
     for model_name in model_names:
@@ -915,6 +935,7 @@ def plot_prediction_interval_pairplots(
     moe_model_name: str,
     expert_model_prefix: str,
 ) -> None:
+    """Create model-level prediction interval pair/parity plots."""
 
     figures_dir.mkdir(parents=True, exist_ok=True)
     general = pd.DataFrame()
