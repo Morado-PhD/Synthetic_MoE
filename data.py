@@ -1,3 +1,20 @@
+"""Synthetic data generation for the controlled distribution-shift benchmark.
+
+Protocol implemented here:
+
+1. Generate 300 points for each batch family A, B, and C.
+2. For each family, compute the empirical high-tail threshold q0.80 of T_L.
+3. Remove the high-T_L tail from base training:
+   - D_base contains y < q0.80 within each family.
+   - D_adapt and D_test_shifted are disjoint splits of y >= q0.80.
+4. Order D_adapt so cumulative prefixes remain balanced by family, target
+   quantile, and composition-space cluster.
+5. Evaluate models only on D_test_shifted.
+
+The predictive target is liquidus temperature, `T_L`. Glass-formulation
+constraints are retained only as diagnostic columns for later work.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -20,6 +37,7 @@ from sklearn.preprocessing import StandardScaler
 
 from .plotting import FAMILY_COLORS
 
+
 Z_COLS = ["zFe", "zCrNi", "zAl", "zNa"]
 A_COLS = ["aSi", "aB", "aNa", "aAl"]
 X_COLS = ["xFe", "xCrNi", "xSi", "xB", "xNa", "xAl"]
@@ -31,23 +49,33 @@ SPLIT_COL = "split"
 
 @dataclass(frozen=True)
 class GenerationConfig:
+    """Constants that define the shifted-tail proof-of-principle benchmark."""
+
+    # Decision-variable bounds.
     w_min: float = 0.25
     w_max: float = 0.55
 
+    # Dataset size and shifted-regime definition.
     n_per_family: int = 300
     shift_quantile: float = 0.80
     adapt_fraction_of_shift: float = 0.50
 
+    # Adaptation arrives as cumulative percentages of D_adapt.
     adapt_percentages: tuple[int, ...] = (0, 20, 40, 60, 80, 100)
 
+    # Stratification controls for adaptation/test split and adaptation order.
     shifted_target_bins: int = 3
     composition_clusters: int = 3
     use_composition_clusters: bool = True
 
+    # Oracle constants.
     c_crit: float = 0.34
     noise_std: float = 10.0
     seed: int = 42
 
+    # Each component is sampled from its range and then row-normalized. The
+    # ranges make the batch families chemically distinct without giving the
+    # model a family label as an input.
     family_z_ranges: Mapping[str, Mapping[str, tuple[float, float]]] = field(
         default_factory=lambda: {
             "A": {
@@ -73,6 +101,7 @@ class GenerationConfig:
 
 
 def expected_split_counts(cfg: GenerationConfig) -> dict[str, int]:
+    """Return expected per-family counts for base/adapt/shifted-test splits."""
 
     n_shift = int(round(cfg.n_per_family * (1.0 - cfg.shift_quantile)))
     n_adapt = int(round(n_shift * cfg.adapt_fraction_of_shift))
@@ -82,6 +111,7 @@ def expected_split_counts(cfg: GenerationConfig) -> dict[str, int]:
 
 
 def _normalize_rows(values: np.ndarray) -> np.ndarray:
+    """Normalize rows so each composition vector sums to one."""
 
     row_sums = values.sum(axis=1, keepdims=True)
     if np.any(row_sums <= 0.0):
@@ -92,6 +122,7 @@ def _normalize_rows(values: np.ndarray) -> np.ndarray:
 def sample_waste_spectrum(
     family: str, n: int, rng: np.random.Generator, cfg: GenerationConfig
 ) -> np.ndarray:
+    """Sample normalized waste-batch spectra `z` for one family."""
 
     if family not in cfg.family_z_ranges:
         raise KeyError(f"Unknown family {family!r}; expected one of {FAMILIES}.")
@@ -103,6 +134,7 @@ def sample_waste_spectrum(
 def sample_formulation_decisions(
     n: int, rng: np.random.Generator, cfg: GenerationConfig
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Sample waste loading `W` and additive vector `a`."""
 
     w = rng.uniform(cfg.w_min, cfg.w_max, size=n)
     a = rng.dirichlet([1.0, 1.0, 1.0, 1.0], size=n)
@@ -110,6 +142,7 @@ def sample_formulation_decisions(
 
 
 def glass_composition(w: np.ndarray, z: np.ndarray, a: np.ndarray) -> pd.DataFrame:
+    """Map `W`, `z`, and `a` to final glass composition `x`."""
 
     z_fe, z_crni, z_al, z_na = z.T
     a_si, a_b, a_na, a_al = a.T
@@ -127,13 +160,13 @@ def glass_composition(w: np.ndarray, z: np.ndarray, a: np.ndarray) -> pd.DataFra
 
 
 def crystal_burden(x: pd.DataFrame) -> np.ndarray:
-    
+    """Crystal-forming burden used by the hidden liquidus oracle."""
 
     return x["xFe"].to_numpy() + 3.0 * x["xCrNi"].to_numpy() + 0.3 * x["xAl"].to_numpy()
 
 
 def liquidus_temperature_true(x: pd.DataFrame, cfg: GenerationConfig) -> np.ndarray:
-    
+    """Noise-free hidden liquidus-temperature oracle."""
 
     c = crystal_burden(x)
     base = (
@@ -153,7 +186,7 @@ def liquidus_temperature_true(x: pd.DataFrame, cfg: GenerationConfig) -> np.ndar
 
 
 def log_viscosity(x: pd.DataFrame, w: np.ndarray) -> np.ndarray:
-    
+    """Supporting property retained for later formulation optimization."""
 
     return (
         1.3
@@ -166,6 +199,7 @@ def log_viscosity(x: pd.DataFrame, w: np.ndarray) -> np.ndarray:
 
 
 def pct_durability(x: pd.DataFrame, w: np.ndarray) -> np.ndarray:
+    """Supporting property retained for later formulation optimization."""
 
     return (
         0.5
@@ -179,6 +213,7 @@ def pct_durability(x: pd.DataFrame, w: np.ndarray) -> np.ndarray:
 def make_family_dataset(
     family: str, n: int, rng: np.random.Generator, cfg: GenerationConfig
 ) -> pd.DataFrame:
+    """Generate one complete batch-family dataframe."""
 
     z = sample_waste_spectrum(family, n, rng, cfg)
     w, a = sample_formulation_decisions(n, rng, cfg)
@@ -202,7 +237,7 @@ def make_family_dataset(
 
 
 def _add_shift_strata(df: pd.DataFrame, cfg: GenerationConfig, seed: int) -> pd.DataFrame:
-    
+    """Annotate shifted data with target bins and composition clusters."""
 
     out = df.copy()
     out["target_bin"] = pd.qcut(
@@ -232,7 +267,7 @@ def _add_shift_strata(df: pd.DataFrame, cfg: GenerationConfig, seed: int) -> pd.
 def _safe_stratified_split(
     df: pd.DataFrame, *, test_size: float, seed: int, stratify_col: str = "stratum"
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    
+    """Use detailed strata when possible, otherwise fall back to target bins."""
 
     stratify = df[stratify_col]
     if stratify.value_counts().min() < 2:
@@ -244,7 +279,7 @@ def _safe_stratified_split(
 def split_family_shifted_tail(
     df: pd.DataFrame, cfg: GenerationConfig, seed: int
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    
+    """Split one family into base, adaptation, and shifted test sets."""
 
     threshold = float(df[TARGET_COL].quantile(cfg.shift_quantile))
     full = df.copy()
@@ -280,7 +315,7 @@ def split_family_shifted_tail(
 
 
 def assign_adaptation_order(adapt_df: pd.DataFrame, seed: int) -> pd.DataFrame:
-    
+    """Create a balanced order for incremental adaptation prefixes."""
 
     rng = np.random.default_rng(seed)
     parts = []
@@ -301,7 +336,7 @@ def assign_adaptation_order(adapt_df: pd.DataFrame, seed: int) -> pd.DataFrame:
 
 
 def adaptation_subset(adapt_df: pd.DataFrame, percentage: int) -> pd.DataFrame:
-    
+    """Return the cumulative adaptation subset for a percentage checkpoint."""
 
     if percentage <= 0:
         return adapt_df.iloc[0:0].copy()
@@ -312,7 +347,7 @@ def adaptation_subset(adapt_df: pd.DataFrame, percentage: int) -> pd.DataFrame:
 
 
 def make_all_datasets(cfg: GenerationConfig | None = None) -> Dict[str, pd.DataFrame]:
-    
+    """Generate all family data and shifted-tail protocol splits."""
 
     cfg = cfg or GenerationConfig()
     rng = np.random.default_rng(cfg.seed)
@@ -351,7 +386,7 @@ def make_all_datasets(cfg: GenerationConfig | None = None) -> Dict[str, pd.DataF
 
 
 def write_datasets(datasets: Mapping[str, pd.DataFrame], data_dir: Path) -> None:
-    
+    """Write generated datasets as CSV files."""
 
     data_dir.mkdir(parents=True, exist_ok=True)
     for stale_csv in data_dir.glob("*.csv"):
@@ -361,31 +396,31 @@ def write_datasets(datasets: Mapping[str, pd.DataFrame], data_dir: Path) -> None
 
 
 def load_datasets(data_dir: Path) -> Dict[str, pd.DataFrame]:
-    
+    """Load all generated CSV files from the data directory."""
 
     return {csv_path.stem: pd.read_csv(csv_path) for csv_path in sorted(data_dir.glob("*.csv"))}
 
 
 def base_train_set(datasets: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
-    
+    """Return D_base, the base training set with the shifted tail removed."""
 
     return datasets["D_base"].copy()
 
 
 def adaptation_set(datasets: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
-    
+    """Return D_adapt, the ordered adaptation subset of the shifted regime."""
 
     return datasets["D_adapt"].copy()
 
 
 def final_test_set(datasets: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
-    
+    """Return D_test_shifted, the untouched shifted final test set."""
 
     return datasets["D_test_shifted"].copy()
 
 
 def family_test_sets(datasets: Mapping[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
-    
+    """Return shifted final test data partitioned by family plus aggregate."""
 
     test_df = final_test_set(datasets)
     out = {family: test_df[test_df["family"] == family].copy() for family in FAMILIES}
@@ -394,7 +429,7 @@ def family_test_sets(datasets: Mapping[str, pd.DataFrame]) -> Dict[str, pd.DataF
 
 
 def summarize_datasets(datasets: Mapping[str, pd.DataFrame], cfg: GenerationConfig) -> pd.DataFrame:
-    
+    """Summarize size and target distribution for generated datasets."""
 
     rows = []
     names = ["D_all", "D_base", "D_shifted", "D_adapt", "D_test_shifted"]
@@ -421,6 +456,7 @@ def summarize_datasets(datasets: Mapping[str, pd.DataFrame], cfg: GenerationConf
 
 
 def verify_datasets(datasets: Mapping[str, pd.DataFrame], cfg: GenerationConfig) -> list[str]:
+    """Return checks for counts, closures, and no shifted-test leakage."""
 
     counts = expected_split_counts(cfg)
     checks: list[str] = []
@@ -467,7 +503,7 @@ def verify_datasets(datasets: Mapping[str, pd.DataFrame], cfg: GenerationConfig)
 
 
 def adaptation_balance_summary(adapt_df: pd.DataFrame, cfg: GenerationConfig) -> pd.DataFrame:
-    
+    """Summarize family and target/cluster coverage at each adaptation prefix."""
 
     rows = []
     for percentage in cfg.adapt_percentages:
@@ -489,7 +525,7 @@ def adaptation_balance_summary(adapt_df: pd.DataFrame, cfg: GenerationConfig) ->
 
 
 def create_distribution_shift_plot(datasets: Mapping[str, pd.DataFrame], cfg: GenerationConfig, results_dir: Path) -> None:
-    
+    """Plot full T_L distributions with high-tail shifted regions shaded."""
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 4), sharey=False)
     for ax, family in zip(axes, FAMILIES):
@@ -510,7 +546,7 @@ def create_distribution_shift_plot(datasets: Mapping[str, pd.DataFrame], cfg: Ge
 
 
 def create_adaptation_diagnostics(datasets: Mapping[str, pd.DataFrame], results_dir: Path) -> pd.DataFrame:
-    
+    """Create required data-quality diagnostics for the shifted-tail protocol."""
 
     results_dir.mkdir(parents=True, exist_ok=True)
     for stale in list(results_dir.glob("*.png")) + list(results_dir.glob("*.csv")):
