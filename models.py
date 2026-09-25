@@ -1,3 +1,4 @@
+"""PyTorch models, Optuna tuning, and diagnostics for the MoE benchmark."""
 
 from __future__ import annotations
 
@@ -46,6 +47,7 @@ DEFAULT_MLP_PARAMS: dict[str, Any] = {
 
 
 def set_seed(seed: int) -> None:
+    """Make CPU runs repeatable enough for proof-of-principle comparison."""
 
     random.seed(seed)
     np.random.seed(seed)
@@ -59,11 +61,14 @@ def set_seed(seed: int) -> None:
 
 @dataclass
 class Scalers:
+    """Feature and target standardization for a model."""
+
     x: StandardScaler
     y: StandardScaler
 
 
 def count_parameters(model: nn.Module, trainable_only: bool = False) -> int:
+    """Count model parameters."""
 
     if trainable_only:
         return int(sum(p.numel() for p in model.parameters() if p.requires_grad))
@@ -71,6 +76,7 @@ def count_parameters(model: nn.Module, trainable_only: bool = False) -> int:
 
 
 def fit_scalers(train_df: pd.DataFrame) -> Scalers:
+    """Fit feature and target scalers on the model's training data only."""
 
     return Scalers(
         x=StandardScaler().fit(train_df[U_COLS].to_numpy()),
@@ -79,6 +85,7 @@ def fit_scalers(train_df: pd.DataFrame) -> Scalers:
 
 
 def to_tensors(df: pd.DataFrame, scalers: Scalers) -> tuple[torch.Tensor, torch.Tensor]:
+    """Convert a dataframe to scaled torch tensors."""
 
     x = scalers.x.transform(df[U_COLS].to_numpy()).astype(np.float32)
     y = scalers.y.transform(df[[TARGET_COL]].to_numpy()).astype(np.float32).ravel()
@@ -86,6 +93,7 @@ def to_tensors(df: pd.DataFrame, scalers: Scalers) -> tuple[torch.Tensor, torch.
 
 
 def inverse_y(y_scaled: np.ndarray | torch.Tensor, scalers: Scalers) -> np.ndarray:
+    """Map scaled model outputs back to degrees C."""
 
     if isinstance(y_scaled, torch.Tensor):
         y_scaled = y_scaled.detach().cpu().numpy()
@@ -93,6 +101,8 @@ def inverse_y(y_scaled: np.ndarray | torch.Tensor, scalers: Scalers) -> np.ndarr
 
 
 def activation_from_name(name: str) -> nn.Module:
+    """Return an activation module from the Optuna search-space name."""
+
     registry = {
         "ReLU": nn.ReLU,
         "LeakyReLU": nn.LeakyReLU,
@@ -108,6 +118,8 @@ def activation_from_name(name: str) -> nn.Module:
 
 
 def normalize_mlp_params(params: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Fill missing architecture/training parameters with defaults."""
+
     merged = dict(DEFAULT_MLP_PARAMS)
     if params:
         merged.update(dict(params))
@@ -120,6 +132,8 @@ def normalize_mlp_params(params: Mapping[str, Any] | None = None) -> dict[str, A
 
 
 def suggest_mlp_params(trial: optuna.Trial) -> dict[str, Any]:
+    """Shared Optuna search space for the general NN and all MoE experts."""
+
     params: dict[str, Any] = {}
     params["num_layers"] = trial.suggest_int("num_layers", 1, 3)
 
@@ -145,6 +159,8 @@ def suggest_mlp_params(trial: optuna.Trial) -> dict[str, Any]:
 
 
 class TunableMLP(nn.Module):
+    """Feed-forward network defined by the shared hyperparameter space."""
+
     def __init__(
         self,
         d_in: int = 9,
@@ -248,6 +264,7 @@ def _train_val_tensors(
     seed: int,
     val_fraction: float = 0.20,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray, np.ndarray]:
+    """Create an internal training/validation split."""
 
     x, y = to_tensors(df, scalers)
     idx = np.arange(len(df))
@@ -256,6 +273,7 @@ def _train_val_tensors(
 
 
 def _make_scheduler(optimizer: torch.optim.Optimizer, scheduler_name: str, epochs: int):
+    """Build the configured learning-rate scheduler."""
 
     if scheduler_name == "plateau":
         return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=12)
@@ -280,6 +298,7 @@ def train_regression_loop(
     patience: int = 45,
     trial: optuna.Trial | None = None,
 ) -> dict[str, Any]:
+    """Regression loop with validation tracking, early stopping, and best restore."""
 
     params = normalize_mlp_params(params)
     learning_rate = float(lr if lr is not None else params["learning_rate"])
@@ -359,6 +378,7 @@ def tune_mlp_params(
     tune_epochs: int = 120,
     study_name: str = "mlp_tuning",
 ) -> tuple[dict[str, Any], pd.DataFrame]:
+    """Tune one NN with the shared Optuna search space."""
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -390,6 +410,7 @@ def tune_mlp_params(
     study = optuna.create_study(direction="minimize", sampler=sampler, study_name=study_name)
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
     best_params = normalize_mlp_params(study.best_trial.user_attrs or study.best_params)
+    # Reconstruct hidden_dims because Optuna stores layer widths as separate keys.
     if "hidden_dims" not in best_params or any(k.startswith("hidden_dim_l") for k in study.best_params):
         best_params = dict(study.best_params)
         best_params["hidden_dims"] = [
@@ -405,13 +426,14 @@ def tune_mlp_params(
 
 
 def save_json(path: Path, payload: Mapping[str, Any]) -> None:
-
+    """Write a small JSON artifact."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def plot_loss_history(history: Mapping[str, Any], path: Path, title: str) -> None:
+    """Save train/validation loss curves for overfitting checks."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(7, 4))
@@ -442,6 +464,7 @@ def train_mlp(
     output_dir: Path | None = None,
     model_label: str = "general_nn",
 ) -> tuple[MLPRegressor, Scalers]:
+    """Train a general NN, optionally tuning its hyperparameters with Optuna."""
 
     set_seed(seed)
     scalers = fit_scalers(train_df)
@@ -489,6 +512,7 @@ def _train_gate(
     seed: int,
     epochs: int = 120,
 ) -> None:
+    """Train the gate as a classifier over cluster-assigned experts."""
 
     optimizer = torch.optim.Adam(gate.parameters(), lr=2e-3, weight_decay=1e-4)
     rng = torch.Generator().manual_seed(seed)
@@ -529,6 +553,7 @@ def train_moe(
     expert_params: list[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     output_dir: Path | None = None,
 ) -> tuple[MoERegressor, Scalers, KMeans]:
+    """Train an MoE, optionally tuning each expert with Optuna."""
 
     set_seed(seed)
     scalers = fit_scalers(train_df)
@@ -638,6 +663,7 @@ def train_moe(
 
 
 def predict(model: nn.Module, df: pd.DataFrame, scalers: Scalers) -> np.ndarray:
+    """Predict liquidus temperature in degrees C."""
 
     x, _ = to_tensors(df, scalers)
     model.eval()
@@ -658,6 +684,7 @@ def evaluate_final_test(
     updated_params: int,
     constraint_violation_rate: float = np.nan,
 ) -> pd.DataFrame:
+    """Evaluate one model on the untouched final test set."""
 
     rows = []
     for family in [*FAMILIES, "ALL"]:
@@ -684,6 +711,7 @@ def evaluate_final_test(
 
 
 def routing_summary(model: MoERegressor, df: pd.DataFrame, scalers: Scalers, group_col: str = "family") -> pd.DataFrame:
+    """Summarize gate usage by family or split."""
 
     rows = []
     for group_value, group_df in df.groupby(group_col):
@@ -706,6 +734,7 @@ def routing_summary(model: MoERegressor, df: pd.DataFrame, scalers: Scalers, gro
 
 
 def plot_kmeans_family_clusters(train_df: pd.DataFrame, scalers: Scalers, kmeans: KMeans, output_path: Path) -> pd.DataFrame:
+    """Plot synthetic families with KMeans cluster assignments used for MoE initialization."""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     x_scaled = scalers.x.transform(train_df[U_COLS].to_numpy()).astype(np.float32)
@@ -773,6 +802,7 @@ def adapt_moe_step(
     gate_weight: float = 0.08,
     shuffle_targets: bool = False,
 ) -> tuple[list[int], int]:
+    """Locally update an MoE using the currently visible adaptation data."""
 
     if len(seen_adapt_df) == 0:
         return [], 0
